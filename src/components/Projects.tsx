@@ -3,8 +3,7 @@
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { projects } from '../data/projects';
-
-type ThemeType = 'fuchsia' | 'ocean' | 'forest' | 'sunset' | 'white';
+import { ThemeType } from '../utils/themes';
 
 interface ProjectsProps {
   currentTheme: ThemeType;

@@ -1,7 +1,5 @@
 import React from 'react';
-
-// You can export this type from a shared types file later to avoid duplication
-type ThemeType = 'fuchsia' | 'ocean' | 'forest' | 'sunset' | 'white';
+import { ThemeType } from '../utils/themes';
 
 interface ContactProps {
   currentTheme: ThemeType;
