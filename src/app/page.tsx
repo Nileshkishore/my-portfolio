@@ -5,52 +5,233 @@
 import React, { useEffect, useRef, useState } from 'react';
 import About from '../components/About';       
 import Projects from '../components/Projects'; 
-import TechStack from '../components/TechStack'; // <-- NEW IMPORT
+import TechStack from '../components/TechStack';
 import Contact from '../components/Contact';   
 import { ThemeType, themes } from '../utils/themes';
 
-// ─── Neural Network Visual ─────────────────────────────────────────────────
-const NeuralNetworkVisual = () => {
-  const layers = [[20, 50, 80], [15, 38, 62, 85], [25, 50, 75], [50]];
-  const xPos   = [10, 36, 63, 90];
+// ─── Types ─────────────────────────────────────────────────────────────────
+type PipelineStep = 
+  | 'problem_type'
+  | 'data_source'
+  | 'compute'
+  | 'hpo'
+  | 'forecasting_config'
+  | 'serving'
+  | 'running'
+  | 'complete';
+
+interface PipelineConfig {
+  problemType: 'classification' | 'regression' | 'forecasting' | null;
+  dataSource: 'adls' | 's3' | 'gcs' | 'snowflake' | 'bigquery' | null;
+  compute: 'databricks' | 'azure_ml' | 'sagemaker' | 'vertex_ai' | null;
+  hpoEnabled: boolean;
+  backtestMonths: number;
+  forecastValue: number;
+  forecastUnit: 'days' | 'weeks' | 'months';
+  servingTarget: 'aks' | 'azure_ml_endpoint' | 'sagemaker_endpoint' | 'databricks_serving' | 'vertex_endpoint' | 'kubernetes' | null;
+  inferenceType: 'batch' | 'stream' | 'real_time' | null;
+}
+
+const defaultConfig: PipelineConfig = {
+  problemType: null,
+  dataSource: null,
+  compute: null,
+  hpoEnabled: false,
+  backtestMonths: 6,
+  forecastValue: 3,
+  forecastUnit: 'months',
+  servingTarget: null,
+  inferenceType: null,
+};
+
+// ─── Derived Options Based on Context ──────────────────────────────────────
+const getAvailableCompute = (dataSource: PipelineConfig['dataSource']): { value: PipelineConfig['compute']; label: string }[] => {
+  if (!dataSource) return [];
+  
+  const mapping: Record<string, { value: PipelineConfig['compute']; label: string }[]> = {
+    adls: [
+      { value: 'databricks', label: 'Azure Databricks' },
+      { value: 'azure_ml', label: 'Azure ML Compute' },
+    ],
+    s3: [
+      { value: 'databricks', label: 'Databricks on AWS' },
+      { value: 'sagemaker', label: 'Amazon SageMaker' },
+    ],
+    gcs: [
+      { value: 'databricks', label: 'Databricks on GCP' },
+      { value: 'vertex_ai', label: 'Vertex AI' },
+    ],
+    snowflake: [
+      { value: 'databricks', label: 'Databricks (Snowflake connector)' },
+      { value: 'azure_ml', label: 'Azure ML Compute' },
+      { value: 'sagemaker', label: 'Amazon SageMaker' },
+    ],
+    bigquery: [
+      { value: 'databricks', label: 'Databricks on GCP' },
+      { value: 'vertex_ai', label: 'Vertex AI' },
+    ],
+  };
+  
+  return mapping[dataSource] || [];
+};
+
+const getAvailableServing = (compute: PipelineConfig['compute']): { value: PipelineConfig['servingTarget']; label: string; desc: string }[] => {
+  if (!compute) return [];
+  
+  const mapping: Record<string, { value: PipelineConfig['servingTarget']; label: string; desc: string }[]> = {
+    databricks: [
+      { value: 'databricks_serving', label: 'Databricks Model Serving', desc: 'Native serving, low latency' },
+      { value: 'aks', label: 'Azure Kubernetes Service', desc: 'Containerized, auto-scale' },
+      { value: 'kubernetes', label: 'Self-managed Kubernetes', desc: 'Full control, any cloud' },
+    ],
+    azure_ml: [
+      { value: 'azure_ml_endpoint', label: 'Azure ML Managed Endpoint', desc: 'Fully managed, zero ops' },
+      { value: 'aks', label: 'Azure Kubernetes Service', desc: 'Containerized, auto-scale' },
+      { value: 'kubernetes', label: 'Self-managed Kubernetes', desc: 'Full control, any cloud' },
+    ],
+    sagemaker: [
+      { value: 'sagemaker_endpoint', label: 'SageMaker Endpoint', desc: 'Fully managed, auto-scale' },
+      { value: 'kubernetes', label: 'Self-managed Kubernetes', desc: 'Full control, any cloud' },
+    ],
+    vertex_ai: [
+      { value: 'vertex_endpoint', label: 'Vertex AI Endpoint', desc: 'Fully managed, low latency' },
+      { value: 'kubernetes', label: 'Self-managed Kubernetes', desc: 'Full control, any cloud' },
+    ],
+  };
+  
+  return mapping[compute] || [];
+};
+
+const getInferenceTypes = (servingTarget: PipelineConfig['servingTarget']): { value: PipelineConfig['inferenceType']; label: string; desc: string }[] => {
+  if (!servingTarget) return [];
+  
+  if (servingTarget === 'kubernetes') {
+    return [
+      { value: 'batch', label: 'Batch', desc: 'Scheduled Spark jobs' },
+      { value: 'stream', label: 'Stream', desc: 'Kafka/Flink processing' },
+      { value: 'real_time', label: 'Real-time', desc: 'REST API, < 100ms' },
+    ];
+  }
+  
+  if (servingTarget === 'databricks_serving') {
+    return [
+      { value: 'real_time', label: 'Real-time', desc: 'REST API, < 50ms' },
+      { value: 'batch', label: 'Batch', desc: 'Scheduled notebook jobs' },
+    ];
+  }
+  
+  return [
+    { value: 'real_time', label: 'Real-time', desc: 'REST API endpoint' },
+    { value: 'batch', label: 'Batch', desc: 'Scheduled inference' },
+  ];
+};
+
+// ─── Pipeline Step Indicator ───────────────────────────────────────────────
+const StepIndicator = ({ currentStep, steps }: { currentStep: PipelineStep; steps: { key: PipelineStep; label: string }[] }) => {
+  const currentIndex = steps.findIndex(s => s.key === currentStep);
   
   return (
-    <div className="relative w-full max-w-sm h-48 md:h-56 mx-auto my-6 card-animate" aria-hidden="true">
-      <svg className="absolute inset-0 w-full h-full drop-shadow-[0_0_10px_rgba(var(--color-primary-500),0.3)]">
-        {layers.map((layer, i) => {
-          if (i === layers.length - 1) return null;
-          const nextLayer = layers[i + 1];
-          return layer.map((y1, j) => nextLayer.map((y2, k) => (
-            <line 
-              key={`line-${i}-${j}-${k}`} 
-              x1={`${xPos[i]}%`} 
-              y1={`${y1}%`} 
-              x2={`${xPos[i+1]}%`} 
-              y2={`${y2}%`} 
-              stroke="var(--color-primary-600)" 
-              strokeWidth="1.5" 
-              className="opacity-40" 
-            />
-          )));
-        })}
-        {layers.map((layer, i) => layer.map((y, j) => (
-          <circle 
-            key={`node-${i}-${j}`} 
-            cx={`${xPos[i]}%`} 
-            cy={`${y}%`} 
-            r={i === layers.length - 1 ? "7" : "5"} 
-            fill={i === layers.length - 1 ? "var(--color-secondary-400)" : "var(--color-primary-400)"} 
-            className="animate-pulse" 
-            style={{ animationDelay: `${(i * 0.2) + (j * 0.1)}s` }} 
+    <div className="flex items-center gap-1 mb-6">
+      {steps.map((s, i) => (
+        <div key={s.key} className="flex items-center gap-1">
+          <div
+            className={`w-2 h-2 rounded-full transition-all duration-300 ${
+              i <= currentIndex ? 'scale-100' : 'scale-75 opacity-30'
+            }`}
+            style={{ backgroundColor: i <= currentIndex ? 'var(--color-primary-400)' : 'rgba(255,255,255,0.2)' }}
           />
-        )))}
-      </svg>
+          {i < steps.length - 1 && (
+            <div
+              className="w-4 h-px transition-all duration-300"
+              style={{ backgroundColor: i < currentIndex ? 'var(--color-primary-400)' : 'rgba(255,255,255,0.1)' }}
+            />
+          )}
+        </div>
+      ))}
+      <span className="ml-3 text-xs text-slate-500 font-mono">
+        Step {currentIndex + 1}/{steps.length}
+      </span>
     </div>
   );
 };
 
-// ─── Game types ────────────────────────────────────────────────────────────
-type GameStage = 'idle' | 'input' | 'conv' | 'pool' | 'flatten' | 'won';
+// ─── Option Card ───────────────────────────────────────────────────────────
+const OptionCard = ({ 
+  selected, 
+  onClick, 
+  label, 
+  desc 
+}: { 
+  selected: boolean; 
+  onClick: () => void; 
+  label: string;
+  desc?: string;
+}) => (
+  <button
+    onClick={onClick}
+    className={`w-full text-left px-4 py-3 rounded-lg border transition-all duration-200 cursor-pointer group ${
+      selected ? 'border-white/20' : 'border-white/5 hover:border-white/10'
+    }`}
+    style={selected ? {
+      backgroundColor: 'rgba(255,255,255,0.08)',
+      borderColor: 'var(--color-primary-500)',
+      boxShadow: 'inset 0 0 0 1px var(--color-primary-500)',
+    } : {
+      backgroundColor: 'rgba(255,255,255,0.02)',
+    }}
+  >
+    <div className="flex items-center gap-3">
+      <div
+        className={`w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 transition-all ${
+          selected ? 'scale-100' : 'scale-90'
+        }`}
+        style={{ borderColor: selected ? 'var(--color-primary-400)' : 'rgba(255,255,255,0.2)' }}
+      >
+        {selected && (
+          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: 'var(--color-primary-400)' }} />
+        )}
+      </div>
+      <div>
+        <p className={`text-sm font-medium transition-colors ${selected ? 'text-white' : 'text-slate-300'}`}>
+          {label}
+        </p>
+        {desc && <p className="text-xs text-slate-500 mt-0.5">{desc}</p>}
+      </div>
+    </div>
+  </button>
+);
+
+// ─── Summary Bar ───────────────────────────────────────────────────────────
+const SummaryBar = ({ config }: { config: PipelineConfig }) => {
+  const items: { label: string; value: string }[] = [];
+  
+  if (config.problemType) items.push({ label: 'Problem', value: config.problemType });
+  if (config.dataSource) items.push({ label: 'Data', value: config.dataSource.toUpperCase() });
+  if (config.compute) items.push({ label: 'Compute', value: config.compute.replace('_', ' ').replace('ml', 'ML') });
+  if (config.servingTarget) items.push({ label: 'Serve', value: config.servingTarget.replace(/_/g, ' ') });
+  if (config.inferenceType) items.push({ label: 'Type', value: config.inferenceType.replace('_', '-') });
+  
+  if (items.length === 0) return null;
+  
+  return (
+    <div className="flex flex-wrap gap-2 mb-4">
+      {items.map((item, i) => (
+        <span
+          key={i}
+          className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-mono"
+          style={{
+            backgroundColor: 'rgba(255,255,255,0.04)',
+            border: '1px solid rgba(255,255,255,0.08)',
+            color: 'var(--color-primary-400)',
+          }}
+        >
+          <span className="text-slate-500">{item.label}:</span>
+          {item.value}
+        </span>
+      ))}
+    </div>
+  );
+};
 
 // ─── Main Component ────────────────────────────────────────────────────────
 export default function Portfolio() {
@@ -58,22 +239,27 @@ export default function Portfolio() {
   const [currentTheme, setCurrentTheme]       = useState<ThemeType>('fuchsia');
   const [mounted, setMounted]                 = useState(false);
 
-  // Game state
-  const [stage, setStage]               = useState<GameStage>('idle');
-  const [inputNodes, setInputNodes]     = useState<Set<number>>(new Set());
-  const [convTarget, setConvTarget]     = useState(-1);
-  const [convScore, setConvScore]       = useState(0);
-  const [poolNums, setPoolNums]         = useState<number[]>([0, 0, 0, 0]);
-  const [poolScore, setPoolScore]       = useState(0);
-  const [flattenNodes, setFlattenNodes] = useState<number[]>([]);
-  const [flattenNext, setFlattenNext]   = useState(1);
+  const [step, setStep] = useState<PipelineStep>('problem_type');
+  const [config, setConfig] = useState<PipelineConfig>(defaultConfig);
+  const [logs, setLogs] = useState<string[]>([]);
+  const [metrics, setMetrics] = useState<Record<string, string> | null>(null);
+  const [isRunning, setIsRunning] = useState(false);
+  const [showReset, setShowReset] = useState(false);
 
-  // Ensure component is mounted to prevent hydration mismatches
+  const stepLabels: { key: PipelineStep; label: string }[] = [
+    { key: 'problem_type', label: 'Problem' },
+    { key: 'data_source', label: 'Data' },
+    { key: 'compute', label: 'Compute' },
+    { key: 'hpo', label: 'HPO' },
+    { key: 'forecasting_config', label: 'Config' },
+    { key: 'serving', label: 'Serve' },
+    { key: 'running', label: 'Run' },
+  ];
+
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  // Mouse spotlight
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (spotlightRef.current) {
@@ -84,71 +270,110 @@ export default function Portfolio() {
     return () => window.removeEventListener('mousemove', handleMouseMove);
   }, [currentTheme]);
 
-  // Conv2D timer
-  useEffect(() => {
-    let interval: ReturnType<typeof setInterval>;
-    if (stage === 'conv') {
-      setConvTarget(Math.floor(Math.random() * 9));
-      interval = setInterval(() => setConvTarget(Math.floor(Math.random() * 9)), 700);
+  const updateConfig = (updates: Partial<PipelineConfig>) => {
+    setConfig(prev => {
+      const next = { ...prev, ...updates };
+      
+      if ('dataSource' in updates) {
+        next.compute = null;
+        next.servingTarget = null;
+        next.inferenceType = null;
+      }
+      
+      if ('compute' in updates) {
+        next.servingTarget = null;
+        next.inferenceType = null;
+      }
+      
+      if ('servingTarget' in updates) {
+        next.inferenceType = null;
+      }
+      
+      return next;
+    });
+  };
+
+  const advanceStep = (nextStep: PipelineStep) => {
+    setStep(nextStep);
+    setShowReset(false);
+  };
+
+  const runPipeline = async () => {
+    setStep('running');
+    setIsRunning(true);
+    setLogs([]);
+    setMetrics(null);
+    
+    const logs: string[] = [];
+    const addLog = (msg: string, delay: number) => {
+      return new Promise<void>(resolve => {
+        setTimeout(() => {
+          logs.push(msg);
+          setLogs([...logs]);
+          resolve();
+        }, delay);
+      });
+    };
+
+    const dsName = config.dataSource?.toUpperCase() || 'DATA_SOURCE';
+    const ts = () => new Date().toLocaleTimeString();
+
+    await addLog(`[${ts()}] Connecting to ${dsName}...`, 600);
+    await addLog(`[${ts()}] Validating schema and partitioning...`, 800);
+    await addLog(`[${ts()}] Provisioning compute cluster...`, 1000);
+    
+    if (config.hpoEnabled) {
+      await addLog(`[${ts()}] Starting Hyperopt with 50 trials...`, 1200);
+      await addLog(`[${ts()}] Trial 23/50: val_loss=0.0421 (best so far)...`, 500);
+      await addLog(`[${ts()}] Trial 47/50: val_loss=0.0389 (new best)...`, 500);
     }
-    return () => clearInterval(interval);
-  }, [stage, convScore]);
-
-  const generatePoolNumbers = () =>
-    setPoolNums(Array.from({ length: 4 }, () => Math.floor(Math.random() * 90) + 10));
-
-  const generateFlattenNodes = () => {
-    const nodes = [1, 2, 3, 4];
-    for (let i = nodes.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [nodes[i], nodes[j]] = [nodes[j], nodes[i]];
+    
+    await addLog(`[${ts()}] Training final model with best params...`, 1500);
+    
+    if (config.problemType === 'forecasting') {
+      await addLog(`[${ts()}] Backtesting ${config.backtestMonths} months...`, 1200);
+      await addLog(`[${ts()}] Generating ${config.forecastValue} ${config.forecastUnit} forecast...`, 1000);
     }
-    setFlattenNodes(nodes);
-    setFlattenNext(1);
-  };
+    
+    await addLog(`[${ts()}] Running cross-validation...`, 1000);
+    await addLog(`[${ts()}] Registering model in MLflow registry...`, 800);
+    await addLog(`[${ts()}] Deploying to ${config.servingTarget?.replace(/_/g, ' ')} (${config.inferenceType?.replace(/_/g, '-')})...`, 1500);
+    await addLog(`[${ts()}] Pipeline complete. Endpoint ready.`, 600);
 
-  const handleInputClick = (index: number) => {
-    const newSet = new Set(inputNodes);
-    newSet.add(index);
-    setInputNodes(newSet);
-    if (newSet.size === 9) setTimeout(() => setStage('conv'), 400);
-  };
-
-  const handleConvClick = (index: number) => {
-    if (index !== convTarget) return;
-    const s = convScore + 1;
-    setConvScore(s);
-    if (s >= 5) { setStage('pool'); generatePoolNumbers(); }
-    else setConvTarget(-1);
-  };
-
-  const handlePoolClick = (num: number) => {
-    if (num === Math.max(...poolNums)) {
-      const s = poolScore + 1;
-      setPoolScore(s);
-      if (s >= 3) { setStage('flatten'); generateFlattenNodes(); }
-      else generatePoolNumbers();
-    } else {
-      setPoolScore(Math.max(0, poolScore - 1));
+    const mockMetrics: Record<string, string> = {};
+    if (config.problemType === 'classification') {
+      mockMetrics['Accuracy'] = '94.2%';
+      mockMetrics['F1 Score'] = '0.91';
+      mockMetrics['AUC-ROC'] = '0.97';
+      mockMetrics['Latency'] = '12ms';
+    } else if (config.problemType === 'regression') {
+      mockMetrics['RMSE'] = '0.042';
+      mockMetrics['MAE'] = '0.031';
+      mockMetrics['R-squared'] = '0.89';
+      mockMetrics['Latency'] = '8ms';
+    } else if (config.problemType === 'forecasting') {
+      mockMetrics['MAPE'] = '3.2%';
+      mockMetrics['RMSE'] = '142.5';
+      mockMetrics['MAE'] = '98.3';
+      mockMetrics['Horizon'] = `${config.forecastValue} ${config.forecastUnit}`;
     }
+
+    setIsRunning(false);
+    setMetrics(mockMetrics);
+    setStep('complete');
+    setShowReset(true);
   };
 
-  const handleFlattenClick = (num: number) => {
-    if (num !== flattenNext) { setFlattenNext(1); return; }
-    const next = flattenNext + 1;
-    setFlattenNext(next);
-    if (next > 4) setStage('won');
+  const resetAll = () => {
+    setConfig(defaultConfig);
+    setStep('problem_type');
+    setLogs([]);
+    setMetrics(null);
+    setIsRunning(false);
+    setShowReset(false);
   };
 
-  const resetGame = () => {
-    setInputNodes(new Set());
-    setConvScore(0);
-    setPoolScore(0);
-    setFlattenNext(1);
-    setStage('input');
-  };
-
-  if (!mounted) return null; // Hydration safety guard
+  if (!mounted) return null;
 
   return (
     <main
@@ -168,26 +393,17 @@ export default function Portfolio() {
         }
         
         ${currentTheme === 'white' ? `
-          /* Invert text colors for Light Mode */
           main { color: #0f172a !important; }
           .text-slate-200, .text-slate-300, .text-slate-400, .text-slate-500 { color: #475569 !important; }
           .text-white { color: #0f172a !important; }
-          
-          /* Invert backgrounds and borders */
           .bg-white\\/5 { background-color: rgba(0, 0, 0, 0.04) !important; }
           .bg-white\\/10 { background-color: rgba(0, 0, 0, 0.08) !important; }
           .border-white\\/5, .border-white\\/10, .border-white\\/20 { border-color: rgba(0, 0, 0, 0.1) !important; }
-          
-          /* Specific dark elements */
           .bg-\\[\\#0a0a1a\\] { background-color: #ffffff !important; box-shadow: 0 4px 20px rgba(0,0,0,0.08) !important; }
           .bg-\\[\\#0a0a1a\\]\\/50 { background-color: #f8fafc !important; }
           .bg-\\[\\#0a0a1a\\]\\/90 { background-color: rgba(255, 255, 255, 0.95) !important; }
           .ring-\\[\\#0a0a1a\\] { --tw-ring-color: #ffffff !important; }
-          
-          /* Form elements */
           select { background-color: #f1f5f9 !important; border-color: #cbd5e1 !important; color: #0f172a !important; }
-          
-          /* Ambient blobs */
           .mix-blend-screen { mix-blend-mode: multiply !important; opacity: 0.3 !important; }
         ` : ''}
 
@@ -306,110 +522,344 @@ export default function Portfolio() {
               ML · MLOps · Data Engineering · LLM
             </div>
 
-            {/* ── Mini game ── */}
-            <div className="min-h-[320px] flex flex-col justify-center">
-              {stage === 'idle' && (
-                <div className="space-y-5 card-animate">
-                  <p className="text-4xl md:text-5xl font-black text-slate-200" aria-hidden="true">System Standby</p>
-                  <p className="text-slate-400 text-lg">Initialize and train the neural network to proceed.</p>
-                  <button onClick={resetGame} className="px-6 py-3 rounded-xl border border-white/10 bg-white/5 hover:bg-white/10 transition-colors font-medium text-white flex items-center gap-3 w-max cursor-pointer">
-                    <span className="w-2.5 h-2.5 rounded-full animate-pulse" style={{ backgroundColor: 'var(--color-primary-400)' }} />
-                    Start Training Pipeline
+            {/* ── Interactive Pipeline Builder ── */}
+            <div className="min-h-[480px] flex flex-col justify-center">
+              {/* Summary */}
+              <SummaryBar config={config} />
+
+              {/* Step indicator */}
+              {(step !== 'running' && step !== 'complete') && (
+                <StepIndicator currentStep={step} steps={stepLabels.filter(s => {
+                  if (s.key === 'forecasting_config') return config.problemType === 'forecasting';
+                  return s.key !== 'running' && s.key !== 'complete';
+                })} />
+              )}
+
+              {/* STEP 1: Problem Type */}
+              {step === 'problem_type' && (
+                <div className="space-y-4 card-animate">
+                  <p className="text-lg font-bold">What type of ML problem?</p>
+                  <div className="space-y-2">
+                    <OptionCard
+                      selected={config.problemType === 'classification'}
+                      onClick={() => updateConfig({ problemType: 'classification' })}
+                      label="Classification"
+                      desc="Fraud detection, churn prediction, sentiment analysis"
+                    />
+                    <OptionCard
+                      selected={config.problemType === 'regression'}
+                      onClick={() => updateConfig({ problemType: 'regression' })}
+                      label="Regression"
+                      desc="Price prediction, demand estimation, scoring"
+                    />
+                    <OptionCard
+                      selected={config.problemType === 'forecasting'}
+                      onClick={() => updateConfig({ problemType: 'forecasting' })}
+                      label="Time Series Forecasting"
+                      desc="Revenue projection, inventory planning, anomaly detection"
+                    />
+                  </div>
+                  <button
+                    onClick={() => advanceStep('data_source')}
+                    disabled={!config.problemType}
+                    className={`w-full py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                      config.problemType ? 'text-white cursor-pointer hover:opacity-90' : 'opacity-30 cursor-not-allowed'
+                    }`}
+                    style={{ backgroundColor: config.problemType ? 'var(--color-primary-500)' : 'rgba(255,255,255,0.1)' }}
+                  >
+                    Continue
                   </button>
                 </div>
               )}
 
-              {stage === 'input' && (
-                <div className="space-y-6 card-animate">
-                  <div>
-                    <p className="text-xl font-bold mb-1">Layer 1: Input Data</p>
-                    <p className="text-sm text-slate-400 font-mono">Task: Activate all nodes to load the matrix.</p>
-                  </div>
-                  <div className="grid grid-cols-3 gap-3 p-4 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm w-fit mx-auto lg:mx-0">
-                    {[0,1,2,3,4,5,6,7,8].map((i) => (
-                      <button key={i} onClick={() => handleInputClick(i)}
-                        className={`w-16 h-16 rounded-xl border transition-all duration-300 cursor-pointer ${inputNodes.has(i) ? 'scale-95 shadow-inner' : 'hover:scale-105 hover:bg-white/10'}`}
-                        style={inputNodes.has(i) ? { backgroundColor: 'var(--color-primary-500)', borderColor: 'var(--color-primary-400)', boxShadow: `0 0 15px ${themes[currentTheme].glow}` } : { backgroundColor: currentTheme === 'white' ? 'rgba(0,0,0,0.03)' : 'rgba(255,255,255,0.05)', borderColor: currentTheme === 'white' ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.1)' }}
-                        aria-label={`Node ${i + 1}`}
+              {/* STEP 2: Data Source */}
+              {step === 'data_source' && (
+                <div className="space-y-4 card-animate">
+                  <p className="text-lg font-bold">Where is your data?</p>
+                  <div className="space-y-2">
+                    {[
+                      { value: 'adls' as const, label: 'Azure Data Lake Storage', desc: 'ADLS Gen2, Parquet/Delta format' },
+                      { value: 's3' as const, label: 'Amazon S3', desc: 'S3 buckets, Iceberg/Parquet' },
+                      { value: 'gcs' as const, label: 'Google Cloud Storage', desc: 'GCS, BigLake tables' },
+                      { value: 'snowflake' as const, label: 'Snowflake', desc: 'Cloud data warehouse' },
+                      { value: 'bigquery' as const, label: 'BigQuery', desc: 'Serverless, columnar storage' },
+                    ].map((ds) => (
+                      <OptionCard
+                        key={ds.value}
+                        selected={config.dataSource === ds.value}
+                        onClick={() => updateConfig({ dataSource: ds.value })}
+                        label={ds.label}
+                        desc={ds.desc}
                       />
                     ))}
                   </div>
-                </div>
-              )}
-
-              {stage === 'conv' && (
-                <div className="space-y-6 card-animate">
-                  <div>
-                    <p className="text-xl font-bold mb-1">Layer 2: Conv2D Features</p>
-                    <p className="text-sm text-slate-400 font-mono">Task: Extract features by catching the kernel. ({convScore}/5)</p>
-                  </div>
-                  <div className="grid grid-cols-3 gap-3 p-4 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm w-fit mx-auto lg:mx-0">
-                    {[0,1,2,3,4,5,6,7,8].map((i) => (
-                      <button key={i} onClick={() => handleConvClick(i)}
-                        className={`w-16 h-16 rounded-xl border transition-all duration-200 ${i === convTarget ? 'scale-110 shadow-lg cursor-pointer' : 'scale-100 bg-white/5 border-white/10 cursor-default'}`}
-                        style={i === convTarget ? { backgroundColor: 'var(--color-secondary-600)', borderColor: 'var(--color-secondary-400)', boxShadow: `0 0 20px ${themes[currentTheme].glow}` } : {}}
-                        aria-label={i === convTarget ? 'Active kernel — click!' : undefined}
-                      />
-                    ))}
+                  <div className="flex gap-3">
+                    <button onClick={() => advanceStep('problem_type')} className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-slate-400 hover:text-white hover:bg-white/5 transition-all cursor-pointer">
+                      Back
+                    </button>
+                    <button
+                      onClick={() => advanceStep('compute')}
+                      disabled={!config.dataSource}
+                      className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                        config.dataSource ? 'text-white cursor-pointer hover:opacity-90' : 'opacity-30 cursor-not-allowed'
+                      }`}
+                      style={{ backgroundColor: config.dataSource ? 'var(--color-primary-500)' : 'rgba(255,255,255,0.1)' }}
+                    >
+                      Continue
+                    </button>
                   </div>
                 </div>
               )}
 
-              {stage === 'pool' && (
-                <div className="space-y-6 card-animate">
-                  <div>
-                    <p className="text-xl font-bold mb-1">Layer 3: MaxPooling2D</p>
-                    <p className="text-sm text-slate-400 font-mono">Task: Reduce dimensions by clicking the MAX value. ({poolScore}/3)</p>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4 p-5 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm w-fit mx-auto lg:mx-0">
-                    {poolNums.map((num, i) => (
-                      <button key={i} onClick={() => handlePoolClick(num)}
-                        className="w-20 h-20 md:w-24 md:h-24 rounded-xl border border-white/20 bg-white/10 hover:bg-white/20 transition-all duration-200 flex items-center justify-center text-2xl font-bold font-mono cursor-pointer hover:scale-105 active:scale-95"
-                        aria-label={`Value ${num}`}
-                      >
-                        {num}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {stage === 'flatten' && (
-                <div className="space-y-6 card-animate">
-                  <div>
-                    <p className="text-xl font-bold mb-1">Layer 4: Flattening Vector</p>
-                    <p className="text-sm text-slate-400 font-mono">Task: Click the nodes in sequential order (1 to 4).</p>
-                  </div>
-                  <div className="flex gap-4 p-5 rounded-2xl border border-white/10 bg-white/5 backdrop-blur-sm w-fit mx-auto lg:mx-0">
-                    {flattenNodes.map((num, i) => {
-                      const done = num < flattenNext;
-                      return (
-                        <button key={i} onClick={() => handleFlattenClick(num)} disabled={done}
-                          className={`w-14 h-24 md:w-16 md:h-32 rounded-xl border transition-all duration-300 flex items-center justify-center text-xl font-bold font-mono ${done ? 'opacity-50 scale-95' : 'cursor-pointer hover:scale-105 hover:-translate-y-2'}`}
-                          style={done ? { backgroundColor: 'var(--color-primary-600)', borderColor: 'var(--color-primary-400)' } : { backgroundColor: currentTheme === 'white' ? 'rgba(0,0,0,0.05)' : 'rgba(255,255,255,0.1)', borderColor: currentTheme === 'white' ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.2)' }}
-                          aria-label={`Node ${num}${done ? ' (activated)' : ''}`}
-                        >
-                          {num}
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
-
-              {stage === 'won' && (
-                <div className="card-animate space-y-3">
-                  <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs font-bold font-mono">
-                    ✓ Pipeline Deployed Successfully
-                  </div>
-                  <NeuralNetworkVisual />
-                  <p className="text-5xl md:text-7xl font-black leading-tight tracking-tight" aria-hidden="true">
-                    Architecting
-                    <span className="block text-transparent bg-clip-text pb-2" style={{ backgroundImage: `linear-gradient(to right, var(--color-primary-400), var(--color-accent-400), var(--color-secondary-400))` }}>
-                      Intelligent
-                    </span>
-                    ML Systems
+              {/* STEP 3: Compute */}
+              {step === 'compute' && (
+                <div className="space-y-4 card-animate">
+                  <p className="text-lg font-bold">Select compute target</p>
+                  <p className="text-xs text-slate-500">
+                    Compatible options for {config.dataSource?.toUpperCase()}
                   </p>
+                  <div className="space-y-2">
+                    {getAvailableCompute(config.dataSource).map((c) => (
+                      <OptionCard
+                        key={c.value}
+                        selected={config.compute === c.value}
+                        onClick={() => updateConfig({ compute: c.value })}
+                        label={c.label}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => advanceStep('data_source')} className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-slate-400 hover:text-white hover:bg-white/5 transition-all cursor-pointer">
+                      Back
+                    </button>
+                    <button
+                      onClick={() => advanceStep('hpo')}
+                      disabled={!config.compute}
+                      className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                        config.compute ? 'text-white cursor-pointer hover:opacity-90' : 'opacity-30 cursor-not-allowed'
+                      }`}
+                      style={{ backgroundColor: config.compute ? 'var(--color-primary-500)' : 'rgba(255,255,255,0.1)' }}
+                    >
+                      Continue
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 4: HPO */}
+              {step === 'hpo' && (
+                <div className="space-y-4 card-animate">
+                  <p className="text-lg font-bold">Hyperparameter Optimization</p>
+                  <div className="space-y-2">
+                    <OptionCard
+                      selected={config.hpoEnabled}
+                      onClick={() => updateConfig({ hpoEnabled: true })}
+                      label="Enable HPO"
+                      desc="Bayesian optimization with Hyperopt, 50 trials"
+                    />
+                    <OptionCard
+                      selected={!config.hpoEnabled}
+                      onClick={() => updateConfig({ hpoEnabled: false })}
+                      label="Skip HPO"
+                      desc="Use sensible defaults, faster training"
+                    />
+                  </div>
+                  <div className="flex gap-3">
+                    <button onClick={() => advanceStep('compute')} className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-slate-400 hover:text-white hover:bg-white/5 transition-all cursor-pointer">
+                      Back
+                    </button>
+                    <button
+                      onClick={() => advanceStep(config.problemType === 'forecasting' ? 'forecasting_config' : 'serving')}
+                      className="flex-1 py-2.5 rounded-lg text-sm font-medium text-white cursor-pointer hover:opacity-90 transition-all"
+                      style={{ backgroundColor: 'var(--color-primary-500)' }}
+                    >
+                      Continue
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 5: Forecasting Config */}
+              {step === 'forecasting_config' && config.problemType === 'forecasting' && (
+                <div className="space-y-4 card-animate">
+                  <p className="text-lg font-bold">Forecasting Configuration</p>
+                  
+                  <div>
+                    <p className="text-sm text-slate-400 mb-2">Backtesting Period</p>
+                    <div className="grid grid-cols-4 gap-2">
+                      {[3, 6, 12, 24].map((m) => (
+                        <button
+                          key={m}
+                          onClick={() => updateConfig({ backtestMonths: m })}
+                          className={`py-2 rounded-lg text-sm border transition-all cursor-pointer ${
+                            config.backtestMonths === m ? 'border-white/20 text-white' : 'border-white/5 text-slate-400 hover:border-white/10'
+                          }`}
+                          style={config.backtestMonths === m ? { backgroundColor: 'rgba(255,255,255,0.08)', borderColor: 'var(--color-primary-500)' } : { backgroundColor: 'rgba(255,255,255,0.02)' }}
+                        >
+                          {m}mo
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-slate-400 mb-2">Forecast Unit</p>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['days', 'weeks', 'months'] as const).map((u) => (
+                        <button
+                          key={u}
+                          onClick={() => updateConfig({ forecastUnit: u })}
+                          className={`py-2 rounded-lg text-sm border transition-all cursor-pointer capitalize ${
+                            config.forecastUnit === u ? 'border-white/20 text-white' : 'border-white/5 text-slate-400 hover:border-white/10'
+                          }`}
+                          style={config.forecastUnit === u ? { backgroundColor: 'rgba(255,255,255,0.08)', borderColor: 'var(--color-primary-500)' } : { backgroundColor: 'rgba(255,255,255,0.02)' }}
+                        >
+                          {u}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-sm text-slate-400 mb-2">
+                      Horizon: <span className="text-slate-200 font-bold">{config.forecastValue} {config.forecastUnit}</span>
+                    </p>
+                    <input
+                      type="range"
+                      min={1}
+                      max={config.forecastUnit === 'days' ? 90 : config.forecastUnit === 'weeks' ? 52 : 36}
+                      value={config.forecastValue}
+                      onChange={(e) => updateConfig({ forecastValue: parseInt(e.target.value) })}
+                      className="w-full h-1.5 rounded-full appearance-none cursor-pointer"
+                      style={{ accentColor: 'var(--color-primary-400)' }}
+                    />
+                  </div>
+
+                  <div className="flex gap-3">
+                    <button onClick={() => advanceStep('hpo')} className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-slate-400 hover:text-white hover:bg-white/5 transition-all cursor-pointer">
+                      Back
+                    </button>
+                    <button
+                      onClick={() => advanceStep('serving')}
+                      className="flex-1 py-2.5 rounded-lg text-sm font-medium text-white cursor-pointer hover:opacity-90 transition-all"
+                      style={{ backgroundColor: 'var(--color-primary-500)' }}
+                    >
+                      Continue
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* STEP 6: Serving */}
+              {step === 'serving' && (
+                <div className="space-y-4 card-animate">
+                  <p className="text-lg font-bold">Model Serving</p>
+                  <p className="text-xs text-slate-500">
+                    Compatible with {config.compute?.replace('_', ' ').replace('ml', 'ML')}
+                  </p>
+                  
+                  <div>
+                    <p className="text-sm text-slate-400 mb-2">Serving Target</p>
+                    <div className="space-y-2">
+                      {getAvailableServing(config.compute).map((s) => (
+                        <OptionCard
+                          key={s.value}
+                          selected={config.servingTarget === s.value}
+                          onClick={() => updateConfig({ servingTarget: s.value })}
+                          label={s.label}
+                          desc={s.desc}
+                        />
+                      ))}
+                    </div>
+                  </div>
+
+                  {config.servingTarget && (
+                    <div>
+                      <p className="text-sm text-slate-400 mb-2">Inference Type</p>
+                      <div className="space-y-2">
+                        {getInferenceTypes(config.servingTarget).map((it) => (
+                          <OptionCard
+                            key={it.value}
+                            selected={config.inferenceType === it.value}
+                            onClick={() => updateConfig({ inferenceType: it.value })}
+                            label={it.label}
+                            desc={it.desc}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex gap-3">
+                    <button onClick={() => advanceStep(config.problemType === 'forecasting' ? 'forecasting_config' : 'hpo')} className="flex-1 py-2.5 rounded-lg border border-white/10 text-sm text-slate-400 hover:text-white hover:bg-white/5 transition-all cursor-pointer">
+                      Back
+                    </button>
+                    <button
+                      onClick={runPipeline}
+                      disabled={!config.servingTarget || !config.inferenceType}
+                      className={`flex-1 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 ${
+                        config.servingTarget && config.inferenceType ? 'text-white cursor-pointer hover:opacity-90' : 'opacity-30 cursor-not-allowed'
+                      }`}
+                      style={{ 
+                        backgroundImage: config.servingTarget && config.inferenceType ? 'linear-gradient(135deg, var(--color-primary-500), var(--color-secondary-600))' : undefined,
+                        backgroundColor: !config.servingTarget || !config.inferenceType ? 'rgba(255,255,255,0.1)' : undefined,
+                      }}
+                    >
+                      Run Pipeline
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Running / Complete */}
+              {(step === 'running' || step === 'complete') && (
+                <div className="card-animate space-y-4">
+                  <p className="text-lg font-bold">
+                    {isRunning ? 'Pipeline Running...' : 'Pipeline Complete'}
+                  </p>
+
+                  <div className="w-full h-1 rounded-full overflow-hidden" style={{ backgroundColor: 'rgba(255,255,255,0.08)' }}>
+                    <div 
+                      className="h-full rounded-full transition-all duration-1000"
+                      style={{ 
+                        width: step === 'complete' ? '100%' : '85%',
+                        backgroundImage: 'linear-gradient(to right, var(--color-primary-400), var(--color-secondary-400))',
+                      }}
+                    >
+                      {isRunning && (
+                        <div className="h-full w-1/3 rounded-full animate-pulse" style={{ backgroundColor: 'var(--color-secondary-400)', opacity: 0.5 }} />
+                      )}
+                    </div>
+                  </div>
+
+                  {logs.length > 0 && (
+                    <div className="p-4 rounded-lg border border-white/5 font-mono text-xs max-h-40 overflow-y-auto custom-scrollbar" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }}>
+                      {logs.map((log, i) => (
+                        <p key={i} className="text-slate-400 mb-1 leading-relaxed">{log}</p>
+                      ))}
+                      {isRunning && <span className="animate-pulse text-slate-300">_</span>}
+                    </div>
+                  )}
+
+                  {metrics && (
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {Object.entries(metrics).map(([key, value]) => (
+                        <div key={key} className="p-3 rounded-lg border border-white/5 text-center" style={{ backgroundColor: 'rgba(255,255,255,0.03)' }}>
+                          <p className="text-xs text-slate-500 font-mono">{key}</p>
+                          <p className="text-base font-bold mt-1" style={{ color: 'var(--color-primary-400)' }}>{value}</p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {showReset && (
+                    <button 
+                      onClick={resetAll}
+                      className="text-sm text-slate-500 hover:text-slate-300 transition-colors cursor-pointer underline underline-offset-4"
+                    >
+                      Reset and start over
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -433,7 +883,7 @@ export default function Portfolio() {
             </div>
           </div>
 
-          {/* Terminal */}
+          {/* Terminal - Original Production Pipeline Code */}
           <div className="relative w-full max-w-lg mx-auto lg:ml-auto group hidden md:block" aria-label="Code sample: Databricks MLflow pipeline" role="img">
             <div className="absolute -inset-1 rounded-2xl blur opacity-25 group-hover:opacity-60 transition duration-300" style={{ backgroundImage: `linear-gradient(to right, var(--color-primary-600), var(--color-secondary-600))` }} />
             <div className="relative rounded-xl border border-white/10 bg-[#0a0a1a]/90 backdrop-blur-2xl shadow-2xl overflow-hidden flex flex-col h-[400px]">
